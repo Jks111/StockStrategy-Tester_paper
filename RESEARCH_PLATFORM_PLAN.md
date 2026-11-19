@@ -132,7 +132,6 @@ Trading bot demo/
 ├── README.md                            # setup, research workflow, examples
 ├── RESEARCH_PLATFORM_PLAN.md             # this design
 ├── .gitignore                           # secrets, caches, local state
-├── .env.example                         # names only, no credentials
 ├── configs/
 │   ├── app.yaml                         # local paths, UI and provider choices
 │   ├── data.yaml                        # feeds, timeframes and adjustment policy

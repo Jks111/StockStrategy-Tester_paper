@@ -67,7 +67,7 @@ The screenshot's broker-time NASDAQ daily-long strategy and USDJPY range strateg
 
 ## Real market data and insider filings
 
-Copy `.env.example` to `.env` and enter keys locally. Do not put secrets into the frontend or version control.
+Create a local `.env` file and enter keys locally. Do not put secrets into the frontend or version control.
 
 ```dotenv
 ALPACA_API_KEY=your_paper_key
@@ -134,7 +134,6 @@ Trading bot demo/
 ├── pyproject.toml
 ├── requirements.txt
 ├── requirements-dev.txt
-├── .env.example                 # Credentials template; .env is ignored
 ├── README.md
 ├── RESEARCH_PLATFORM_PLAN.md     # Research background and future architecture
 ├── docs/
