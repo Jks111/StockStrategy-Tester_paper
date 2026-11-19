@@ -1,0 +1,2 @@
+tzdata>=2025.1; platform_system == "Windows"
+exchange-calendars>=4.13,<5

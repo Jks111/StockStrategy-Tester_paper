@@ -1,0 +1,25 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+var/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Private configuration, local research and account exports
+.env.*
+!.env.example
+*.sqlite*
+*.db
+*.db-*
+*.pem
+*.key
+*.pfx
+*.p12
+*.log
+exports/
+backups/
+docs/screenshots/

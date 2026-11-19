@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quantlab-local"
+version = "0.1.0"
+description = "Local stock strategy research and paper replay"
+requires-python = ">=3.11"
+dependencies = ["tzdata>=2025.1; platform_system == 'Windows'", "exchange-calendars>=4.13,<5"]
+
+[project.scripts]
+quantlab = "quantlab.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+quantlab = ["ui/*.html", "ui/*.css", "ui/*.js"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*.py" = ["E402"]
+"scripts/*.py" = ["E402"]
+"run.py" = ["E402"]
