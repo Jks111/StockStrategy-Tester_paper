@@ -135,6 +135,7 @@ function tab(name) {
   if (name === 'experiments') safely(refreshRuns);
   if (name === 'insiders') safely(refreshInsiders);
   if (name === 'data') safely(refreshTasks);
+  if (name === 'worker') safely(() => refreshWorker(true));
   if (name === 'replay') safely(refreshReplay);
   if (name === 'database') safely(refreshDatabase);
 }
@@ -405,6 +406,9 @@ function recentWarning() {
   }
   if (symbols.includes('SPY') && strategies.includes('residual_reversion') && period !== 'today') {
     messages.push('Residual reversion uses SPY as its benchmark and will be skipped for SPY.');
+  }
+  if (symbols.some(s => s !== 'SPY') && boot?.strategies.some(s => strategies.includes(s.id) && s.family === 'spy_timing')) {
+    messages.push('The SPY open-to-close models run on SPY. Other selected stocks are skipped for those models.');
   }
   $('#recent-warning').textContent = messages.join(' ');
   $('#recent-run').disabled = recentBusy || invalid || !symbols.length || !strategies.length;
@@ -719,10 +723,75 @@ $('#close-dialog').addEventListener('click', () => $('#chart-dialog').close());
 
 function renderStrategyList() {
   const query = $('#strategy-filter').value.toLowerCase();
-  $('#strategy-count').textContent = `${boot.strategies.length} strategy modules`;
+  $('#strategy-count').textContent = `${boot.strategies.length} strategy modules · 1 comparison`;
   $('#strategy-list').innerHTML = boot.strategies.filter(s => `${s.name} ${s.family}`.toLowerCase().includes(query)).map(s => `<button class="strategy-item ${chosen?.id===s.id?'active':''}" data-id="${s.id}"><span>${esc(s.name)}</span><small>${s.timeframe==='any'?'ANY':s.timeframe.toUpperCase()}</small></button>`).join('');
   $$('.strategy-item').forEach(b => b.addEventListener('click', () => selectStrategy(b.dataset.id)));
+  const terms = query.trim().split(/[\s-]+/);
+  if (terms.every(term => 'spy open to close comparison linear regression random forest machine learning'.includes(term))) {
+    const link = document.createElement('button');
+    link.className = 'strategy-item';
+    link.innerHTML = '<span>SPY open-to-close comparison</span><small>STOCK BACKTEST</small>';
+    link.onclick = () => {
+      tab('recent');
+      $('#spy-comparison').open = true;
+      $('#spy-comparison summary').focus();
+      $('#spy-comparison').scrollIntoView({block: 'start'});
+    };
+    $('#strategy-list').append(link);
+  }
 }
+
+let spyReport, spyBusy = false;
+function showSpyPeriod() {
+  if (!spyReport) return;
+  const period = spyReport.periods[$('#spy-period').value];
+  $('#spy-assumptions').textContent = `${period.start} to ${period.end} · ${period.arms.every_open.sessions} sessions · ${usd.format(spyReport.capital)} starting capital · ${pct(spyReport.allocation)} per entry · ${spyReport.per_side_bps} bps and ${usd.format(spyReport.fee_per_fill)} per fill.`;
+  const arms = {every_open: 'Buy every open', linear: 'Linear regression', forest: 'Random forest'};
+  $('#spy-rows').innerHTML = Object.entries(arms).map(([key, name]) => {
+    const m = period.arms[key];
+    const delta = key === 'every_open' ? 'Baseline' : usd.format(m.net_pnl - period.arms.every_open.net_pnl);
+    return '<tr>' + [name, usd.format(m.net_pnl), delta, pct(m.max_drawdown), m.trades,
+      num(m.average_hold_hours), usd.format(m.costs)].map(v => '<td>' + esc(v) + '</td>').join('') + '</tr>';
+  }).join('');
+}
+async function loadSpyReport() {
+  spyReport = await api('spy-open-close');
+  $('#spy-results').hidden = $('#spy-export').hidden = !spyReport;
+  $('#spy-status').textContent = spyReport ? '' : 'No saved comparison. The first run uses cached SPY history or downloads it from Alpaca.';
+  if (spyReport) {
+    $('#spy-export').href = '/api/spy-open-close/report?dataset=' + encodeURIComponent(spyReport.dataset);
+    showSpyPeriod();
+  }
+}
+async function updateSpyComparison(rerun) {
+  if (spyBusy) return;
+  spyBusy = true;
+  $('#spy-run').disabled = true;
+  try {
+    if (rerun) {
+      $('#spy-status').textContent = 'Running the SPY simulation…';
+      const {task_id} = await api('spy-open-close', {});
+      for (;;) {
+        const task = await api('tasks/' + task_id);
+        if (task.status === 'failed') throw Error(task.error);
+        if (task.status === 'complete') break;
+        await new Promise(resolve => setTimeout(resolve, 750));
+      }
+    }
+    await loadSpyReport();
+    if (rerun) $('#spy-status').textContent = 'Simulation complete. Report saved.';
+  } catch (error) {
+    $('#spy-status').textContent = error.message;
+  } finally {
+    spyBusy = false;
+    $('#spy-run').disabled = false;
+  }
+}
+$('#spy-comparison').ontoggle = () => {
+  if ($('#spy-comparison').open) updateSpyComparison(false);
+};
+$('#spy-period').onchange = showSpyPeriod;
+$('#spy-run').onclick = () => updateSpyComparison(true);
 
 function field(key, value, prefix, labels) {
   if (key === 'share_mode') return `<label>Share sizing<select id="${prefix}-${key}"><option value="fractional" ${value==='fractional'?'selected':''}>Fractional shares (6 decimals)</option><option value="whole" ${value==='whole'?'selected':''}>Whole shares only</option></select></label>`;
@@ -737,8 +806,10 @@ function riskForm(id, prefix) {
 
 function setRunDatasets() {
   const previous = $('#run-dataset').value;
-  $('#run-dataset').innerHTML = datasetOptions(d => chosen.timeframe === 'any' || d.timeframe === chosen.timeframe);
-  if (boot.datasets.some(d => d.id === previous && (chosen.timeframe === 'any' || d.timeframe === chosen.timeframe))) $('#run-dataset').value = previous;
+  const eligible = d => (chosen.timeframe === 'any' || d.timeframe === chosen.timeframe)
+    && (chosen.family !== 'spy_timing' || (d.symbols.includes('SPY') && d.end >= '2024-01-01'));
+  $('#run-dataset').innerHTML = datasetOptions(eligible);
+  if (boot.datasets.some(d => d.id === previous && eligible(d))) $('#run-dataset').value = previous;
   runDatasetChanged();
 }
 
@@ -748,8 +819,9 @@ function runDatasetChanged() {
     $('#holdout-note').textContent = `Import ${chosen.timeframe} bars to run this strategy.`;
     return
   }
-  $('#run-symbols').value = d.symbols.join(', ');
-  $('#run-start').value = d.start;
+  const spyTiming = chosen.family === 'spy_timing';
+  $('#run-symbols').value = spyTiming ? 'SPY' : d.symbols.join(', ');
+  $('#run-start').value = spyTiming && d.start < '2024-01-01' ? '2024-01-01' : d.start;
   const cutoff = new Date(d.holdout.start + 'T12:00:00Z');
   cutoff.setUTCDate(cutoff.getUTCDate() - 1);
   $('#run-end').value = cutoff.toISOString().slice(0, 10);
@@ -758,7 +830,7 @@ function runDatasetChanged() {
 
 function selectStrategy(id) {
   chosen = boot.strategies.find(s => s.id === id);
-  $('#strategy-family').textContent = chosen.family;
+  $('#strategy-family').textContent = chosen.family === 'spy_timing' ? 'SPY market timing' : chosen.family;
   $('#strategy-name').textContent = chosen.name;
   $('#strategy-description').textContent = chosen.description;
   $('#parameter-fields').innerHTML = Object.entries(chosen.defaults).map(([k, v]) => field(k, v, 'param', paramLabels)).join('') || '<p class="muted">No strategy parameters.</p>';
@@ -884,7 +956,7 @@ function renderRuns() {
     return `<tr><td>${r.status==='complete'?`<button class="link result-link" data-id="${r.id}">${esc(r.spec.label||s?.name||r.spec.strategy)}</button>`:esc(r.spec.label||s?.name||r.spec.strategy)}<small>${esc(r.batch_id||r.spec.split)} · ${esc(JSON.stringify(r.spec.params))}</small></td><td>${esc(d?.source)} · ${esc(d?.timeframe)}<small>${esc(r.spec.start)} — ${esc(r.spec.end)}</small></td><td class="status-${esc(r.status)}">${esc(r.status)}${r.status==='running'?' '+num(r.progress*100,0)+'%':''}<small>${esc(r.message)}</small></td><td class="number ${m?.net_return>=0?'up':'down'}">${pct(m?.net_return)}</td><td class="number">${pct(m?.max_drawdown)}</td><td class="number">${m?.trades??'—'}</td><td class="number">${num(m?.sharpe)}</td><td>${esc(r.created.slice(0,16).replace('T',' '))}</td></tr>`
   }).join('') || '<tr><td colspan="8" class="muted">No experiments yet.</td></tr>';
   $$('.result-link').forEach(b => b.addEventListener('click', () => safely(() => showResult(b.dataset.id))));
-  $('#footer-status').textContent = pending ? `${pending} queued or running · local research` : 'Local workspace · no broker orders';
+  $('#footer-status').textContent = pending ? `${pending} queued or running · local research` : 'Local workspace · paper only';
 }
 $('#refresh-runs').addEventListener('click', () => safely(refreshRuns));
 $('#run-status').addEventListener('change', renderRuns);
@@ -1119,6 +1191,116 @@ $('#reset-settings').addEventListener('click', () => {
   riskForm('#run-risk-fields', 'risk');
   toast('Defaults reset')
 });
+function basketBudget() {
+  const reserve = Number($('#basket-reserve').value);
+  const sleeve = 100000 * (1 - reserve / 100) / 5;
+  $('#basket-budget').textContent = 'At $100,000 equity: $' + num(reserve * 1000,0) + ' cash floor · $' + num(sleeve,0) + ' per strategy · up to $' + num(sleeve * .2,0) + ' per entry. Actual sizing uses account equity and available cash.';
+}
+$('#basket-reserve').oninput = basketBudget;
+let basketEvents;
+function renderPerformance(rows) {
+  const tr = cells => '<tr>' + cells.map(v => '<td>' + esc(v) + '</td>').join('') + '</tr>';
+  $('#strategy-performance').innerHTML = rows.map(r => tr([r.name, num(r.realized), num(r.unrealized),
+    num(r.fees), num(r.net)])).join('');
+  $('#strategy-holdings').innerHTML = rows.flatMap(r => r.holdings.map(h => {
+    const minutes = Math.max(0, Math.floor((Date.now() - Date.parse(h.opened)) / 60000));
+    const held = h.opened ? Math.floor(minutes / 1440) + 'd ' + Math.floor(minutes / 60) % 24 +
+      'h ' + minutes % 60 + 'm' : 'Since ' + h.day;
+    const stamp = h.mark ? new Date(h.mark.t).toLocaleString('en-GB', {timeZone:'Europe/Helsinki'}) : 'No quote';
+    const stale = h.mark && Date.now() - Date.parse(h.mark.t) > 60000;
+    return tr([r.name, h.symbol, h.qty, num(h.entry), num(h.mark?.bp), stamp + (stale ? ' · stale' : ''),
+      held, num(h.pnl)]);
+  })).join('') || '<tr><td colspan="8">No open worker holdings.</td></tr>';
+}
+async function refreshBasket() {
+  if (!$('#journal-day').value) $('#journal-day').value=new Date().toLocaleDateString('en-CA',{timeZone:'Europe/Helsinki'});
+  const b = await api('paper-basket');
+  renderPerformance(b.performance || []);
+  if (b.running) $('#basket-reserve').value = b.reserve;
+  $('#basket-reserve').disabled = b.running;
+  $('#basket-start').disabled = b.running;
+  $('#basket-stop').disabled = !b.running;
+  $('#basket-pairs').innerHTML = (b.pairs || []).map(p => '<div>' + esc(new Date(p.time).toLocaleTimeString('en-GB',{timeZone:'Europe/Helsinki'})) + ' · ' + esc(p.symbol) + ' · ' + esc(p.strategy) + ' · ' + esc(p.detail) + '</div>').join('') || 'No regular-session evaluations yet.';
+  $('#basket-events').innerHTML = (b.events || []).map(e => '<div>' + esc(new Date(e.time).toLocaleTimeString('en-GB',{timeZone:'Europe/Helsinki'})) + ' · ' + esc(e.message) + '</div>').join('') || 'Waiting for the first worker check.';
+  const age = b.heartbeat ? Math.max(0, Math.floor((Date.now()-Date.parse(b.heartbeat))/1000)) : null;
+  const late = b.running && age !== null && age > 90;
+  const state = b.running ? (late ? 'CHECK OVERDUE' : age === null ? 'STARTING' : 'RUNNING') : 'STOPPED';
+  const status = $('#basket-status');
+  status.className = b.running && !late && age !== null ? 'up' : 'down';
+  status.textContent = state + ' · ' + b.message + (age === null ? '' : ' · Last completed check ' + age + 's ago (' + new Date(b.heartbeat).toLocaleTimeString('en-GB',{timeZone:'Europe/Helsinki'}) + ' Helsinki)');
+  const changes = b.orders.filter(o => basketEvents && basketEvents.get(o.cid) !== o.status);
+  if (changes.length) toast(changes.slice(0,3).map(o => o.side.toUpperCase()+' '+o.symbol+' · '+o.status+' · '+o.strategy).join(' / '));
+  basketEvents = new Map(b.orders.map(o => [o.cid,o.status]));
+  const total = b.recent_realized_pnl;
+  $('#basket-orders-pnl').innerHTML = total == null ? 'No realized P/L on the recent orders.'
+    : `Realized P/L on recent orders before fees · <strong class="${total < 0 ? 'down' : total > 0 ? 'up' : ''}">${usd.format(total)}</strong>`;
+  $('#basket-orders').innerHTML = b.orders.map(o => {
+    const timestamp = o.executed_at || o.observed_at;
+    const time = timestamp ? new Date(timestamp).toLocaleString('en-GB', {timeZone: 'Europe/Helsinki'}) : '—';
+    const pnl = o.realized_pnl;
+    const cells = [o.strategy, o.symbol, o.side, o.status, o.qty, o.avg].map(v => `<td>${esc(v)}</td>`).join('');
+    return `<tr><td>${esc(o.day)}</td><td>${esc(time)}${!o.executed_at && timestamp ? '<small>Observed by worker</small>' : ''}</td>
+      ${cells}<td class="number ${pnl < 0 ? 'down' : pnl > 0 ? 'up' : ''}">${pnl == null ? '—' : usd.format(pnl)}</td><td>${esc(o.reason)}</td></tr>`;
+  }).join('') || '<tr><td colspan="10">No paper orders recorded yet.</td></tr>';
+  basketBudget();
+  if (b.running && b.account) $('#basket-budget').textContent = 'Paper equity $' + num(b.account.equity) + ' · cash $' + num(b.account.cash) + ' · budget per strategy $' + num(b.account.per_strategy) + ' · cash above reserve $' + num(b.account.available);
+}
+for (const action of ['start','stop']) $('#basket-'+action).onclick = () => safely(async () => {
+  const reserve = $('#basket-reserve');
+  if (action === 'start' && !reserve.reportValidity()) return;
+  if (action === 'stop') {
+    let warnings;
+    try { warnings = (await api('paper-basket/stop-check')).warnings; }
+    catch { warnings = ['Could not verify market or order status.']; }
+    if (warnings.length && !window.confirm(warnings.join('\n') + '\n\nStop automatic monitoring anyway?')) return;
+  }
+  await api('paper-basket', {action, reserve:Number(reserve.value)});
+  await refreshBasket();
+});
+function showFactorComparison(report) {
+  $('#factor-status').textContent = report ? report.start + ' to ' + report.end + ' · ' +
+    report.paired_entries + ' matched entries · includes open positions at last modeled bid' : 'No saved replay yet.';
+  $('#factor-results').innerHTML = (report?.rows || []).map(r => '<tr>' + [r.rule, num(r.net),
+    num(r.fees), pct(r.drawdown), num(r.mean_hours,1), r.trades.length,
+    r.open.map(p => p.symbol + ' ' + num(p.pnl)).join(', ') || 'None'].map(v => '<td>'+esc(v)+'</td>').join('') + '</tr>').join('');
+}
+$('#factor-run').onclick = async () => {
+  $('#factor-run').disabled = true;
+  $('#factor-status').textContent = 'Loading price history and replaying both portfolios…';
+  try { showFactorComparison(await api('factor-comparison', {})); }
+  catch (error) { $('#factor-status').textContent = 'Replay failed · ' + error.message; }
+  finally { $('#factor-run').disabled = false; }
+};
+async function refreshWorker(loadForm) {
+  try { await refreshBasket(); } catch (error) {
+    $('#basket-status').textContent = 'CONNECTION LOST · Worker status unknown';
+    $('#basket-status').className = 'down';
+    throw error;
+  }
+  const w = await api('worker');
+  if (loadForm) {
+    if (!$('#factor-run').disabled) showFactorComparison(await api('factor-comparison'));
+    $('#worker-symbols').value = w.rows.map(r => r.symbol).join(', ');
+    $('#worker-feed').value = w.feed;
+    $('#worker-start').value = w.start || new Date().toLocaleDateString('en-CA', {timeZone:'America/New_York'});
+  }
+  $('#worker-state').textContent = (w.running ? 'Active' : 'Stopped') + ' · ' + w.message;
+  $('#worker-save').disabled = w.running;
+  $$('[data-worker]').forEach(b => b.disabled = b.dataset.worker === 'stop' ? !w.running : w.running || !w.rows.length);
+  $('#worker-rows').innerHTML = w.rows.map(r => `<tr><td>${esc(r.symbol)}</td><td>${esc(r.bar?.bar_end || '—')}</td><td>${esc(r.bar?.outcome || 'Awaiting bars')}</td><td>${r.signal ? esc(JSON.parse(r.signal.signal).reason) + ' · ' + esc(r.signal.bar_end) : '—'}</td></tr>`).join('');
+}
+$('#worker-form').onsubmit = e => {
+  e.preventDefault();
+  safely(async () => {
+    await api('worker', {action:'configure', symbols:$('#worker-symbols').value, start:$('#worker-start').value, feed:$('#worker-feed').value});
+    await refreshWorker(true);
+  });
+};
+$$('[data-worker]').forEach(b => b.onclick = () => safely(async () => {
+  await api('worker', {action:b.dataset.worker});
+  await refreshWorker(false);
+}));
+
 async function poll() {
   if (pollBusy) return;
   pollBusy = true;
@@ -1127,11 +1309,15 @@ async function poll() {
     const before = boot.datasets.length;
     await refreshBoot();
     if (activeTab === 'experiments' || runs.some(r => ['running', 'queued'].includes(r.status))) await refreshRuns();
+    if (activeTab === 'worker') await refreshWorker(false);
     if (activeTab === 'data') await refreshTasks();
     if (tasks.some(t => t.status === 'complete') && events.length === 0) await refreshInsiders();
     if (boot.datasets.length !== before) toast('Dataset ready')
   } catch {
-    /* Explicit actions report errors; background refresh remains quiet. */
+    if (activeTab === 'worker') {
+      $('#basket-status').textContent = 'CONNECTION LOST · Worker status unknown';
+      $('#basket-status').className = 'down';
+    }
   } finally {
     pollBusy = false
   }

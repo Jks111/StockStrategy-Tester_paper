@@ -9,6 +9,7 @@ from .engine import DEFAULT_RISK, backtest, validate
 from .portfolio import backtest_portfolio
 from .recent import batch_clock, batch_history, incompatibility, selection, snapshot, snapshot_data
 from .storage import now
+from .strategies.spy_timing import FILL_FEE
 
 
 class Service:
@@ -135,7 +136,8 @@ class Service:
 
             def comparison(symbol, strategy, days_ago):
                 timeframe = strategy["timeframe"]
-                key = symbol, timeframe == "1Day", days_ago
+                fee = FILL_FEE if strategy["family"] == "spy_timing" else DEFAULT_RISK["commission"]
+                key = symbol, timeframe == "1Day", days_ago, fee
                 if key not in references:
                     try:
                         dataset, spec = dataset_for(
@@ -147,7 +149,7 @@ class Service:
                                 "strategy": "buy_hold",
                                 "split": "stock_reference",
                                 "label": f"{symbol} buy and hold · {spec['start']} to {spec['end']}",
-                                "risk": {"capital": 1000, "position_fraction": 1},
+                                "risk": {"capital": 1000, "position_fraction": 1, "commission": fee},
                             },
                             dataset,
                         )

@@ -1,2 +1,4 @@
 tzdata>=2025.1; platform_system == "Windows"
 exchange-calendars>=4.13,<5
+numpy>=1.26
+scikit-learn>=1.6,<2

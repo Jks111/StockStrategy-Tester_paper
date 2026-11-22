@@ -12,6 +12,22 @@ DEFINITIONS = [
         "Next-open allocation within position limits; unused capital stays in cash. Configure full allocation for a single-symbol benchmark.",
     ),
     (
+        "spy_open_close_linear",
+        "SPY open-to-close · Linear regression",
+        "spy_timing",
+        "1Day",
+        {},
+        "Frozen 2017–2023 SPY model. Buy the next open when the forecast clears costs and sell at the session close. Test from 2024 with 21 prior daily bars.",
+    ),
+    (
+        "spy_open_close_forest",
+        "SPY open-to-close · Random forest",
+        "spy_timing",
+        "1Day",
+        {},
+        "Frozen 2017–2023 SPY forest. Buy the next open when the forecast clears costs and sell at the session close. Test from 2024 with 21 prior daily bars.",
+    ),
+    (
         "opening_ema",
         "Opening candle · EMA 12",
         "intraday",

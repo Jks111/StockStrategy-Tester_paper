@@ -22,15 +22,25 @@ from .data.providers import (
 )
 from .data.synthetic import build_sample
 from .data.trading212_demo import snapshot as demo_snapshot
+from .factor_comparison import run_comparison
 from .jobs import Service
 from .markets import market_hours
+from .paper_basket import PaperBasket
 from .storage import Store
 from .strategies import catalog
+from .worker_control import WorkerControl
 
 UI = Path(__file__).parent / "ui"
 
 
 class LocalServer(ThreadingHTTPServer):
+    def server_close(self):
+        if hasattr(self, "worker"):
+            self.worker.stop_event.set()
+        if hasattr(self, "basket"):
+            self.basket.stop.set()
+        super().server_close()
+
     def server_bind(self):
         if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
             # Windows SO_REUSEADDR lets two servers accept requests on the same port.
@@ -123,6 +133,47 @@ def create_server(port=8765, store=None):
                             "version": "0.1.0",
                         }
                     )
+                elif path == "/api/worker-journal":
+                    day = q.get("day", [""])[0]
+                    rows = self.server.basket.journal_day(day)
+                    out = io.StringIO()
+                    writer = csv.DictWriter(
+                        out,
+                        fieldnames=[
+                            "id",
+                            "time",
+                            "kind",
+                            "strategy",
+                            "symbol",
+                            "message",
+                            "context",
+                        ],
+                    )
+                    writer.writeheader()
+                    writer.writerows(rows)
+                    self.send(out.getvalue(), mime="text/csv", filename=f"worker-{day}.csv")
+                elif path == "/api/factor-comparison":
+                    self.send(store.latest_factor_comparison())
+                elif path == "/api/spy-open-close":
+                    from .spy_open_close import dashboard_report
+
+                    self.send(dashboard_report(store))
+                elif path == "/api/spy-open-close/report":
+                    dataset_id = q.get("dataset", [""])[0]
+                    if not re.fullmatch(r"[a-f0-9]{16}", dataset_id):
+                        raise ValueError("Invalid SPY report dataset")
+                    report = store.root / "experiments" / "spy-open-close" / dataset_id / "report.json"
+                    if report.is_file():
+                        self.send(report.read_bytes(), mime="application/octet-stream",
+                                  filename=f"spy-open-close-{dataset_id}.json")
+                    else:
+                        self.send({"error": "SPY report unavailable"}, 404)
+                elif path == "/api/paper-basket/stop-check":
+                    self.send({"warnings": self.server.basket.stop_warnings()})
+                elif path == "/api/paper-basket":
+                    self.send(self.server.basket.view())
+                elif path == "/api/worker":
+                    self.send(self.server.worker.view())
                 elif path == "/api/runs":
                     self.send(store.runs())
                 elif path == "/api/database":
@@ -203,7 +254,21 @@ def create_server(port=8765, store=None):
                     raise ValueError("Request must be under 20 MB")
                 body = json.loads(self.rfile.read(length))
                 path = urlparse(self.path).path
-                if path == "/api/run":
+                if path == "/api/spy-open-close":
+                    from .spy_open_close import run_dashboard
+
+                    self.send({"task_id": service.task("SPY open-to-close", lambda: run_dashboard(store))}, 202)
+                elif path == "/api/factor-comparison":
+                    report = run_comparison()
+                    store.save_factor_comparison(report)
+                    self.send(report)
+                elif path == "/api/paper-basket":
+                    self.server.basket.command(body)
+                    self.send({"ok": True})
+                elif path == "/api/worker":
+                    self.server.worker.command(body)
+                    self.send({"ok": True})
+                elif path == "/api/run":
                     self.send({"run_id": service.submit(body)}, 202)
                 elif path == "/api/recent":
                     self.send({"run_id": service.recent(body)})
@@ -338,6 +403,8 @@ def create_server(port=8765, store=None):
     server = LocalServer(("127.0.0.1", port), Handler)
     try:
         service = Service(store)
+        server.worker = WorkerControl(store)
+        server.basket = PaperBasket(store)
     except Exception:
         server.server_close()
         raise

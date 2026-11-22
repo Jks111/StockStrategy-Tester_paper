@@ -12,6 +12,7 @@ from .domain import Context, History, Position, Signal, instant
 from .features import atr
 from .storage import digest, now
 from .strategies import definition, load
+from .strategies.spy_timing import FILL_FEE, MODEL_FILE, TRAIN_END, break_even
 
 DEFAULT_RISK = {
     "capital": 1000,
@@ -65,7 +66,10 @@ def validate(spec, metadata):
                 raise ValueError(f"Invalid {k}")
             if k in ("entry_z", "exit_z") and not -10 <= v <= 10:
                 raise ValueError("Z scores must be between -10 and 10")
-    risk = {**DEFAULT_RISK, **spec.get("risk", {})}
+    timing = strategy["family"] == "spy_timing"
+    if timing and symbols != ["SPY"]:
+        raise ValueError("The SPY open-to-close models require SPY as the only symbol")
+    risk = {**DEFAULT_RISK, **({"commission": FILL_FEE} if timing else {}), **spec.get("risk", {})}
     if any(k not in DEFAULT_RISK for k in risk):
         raise ValueError("Unknown risk setting")
     for k, v in risk.items():
@@ -95,6 +99,10 @@ def validate(spec, metadata):
 
     if date.fromisoformat(start) > date.fromisoformat(end):
         raise ValueError("Start must precede end")
+    if timing and start < "2024-01-01":
+        raise ValueError(
+            "The frozen SPY models require an evaluation period starting in 2024 or later"
+        )
     return {
         "dataset": metadata["id"],
         "strategy": strategy["id"],
@@ -144,6 +152,7 @@ def backtest(spec, metadata, all_bars, events, progress=lambda value: None, liqu
     market = {b.session: b.close for b in all_bars.get("SPY", [])}
     params = {s: {**spec["params"], "_market": market} for s in bars}
     evaluate = load(spec["strategy"])
+    timing = definition(spec["strategy"])["family"] == "spy_timing"
     schedule = []
     for symbol, series in bars.items():
         for index, b in enumerate(series):
@@ -290,6 +299,23 @@ def backtest(spec, metadata, all_bars, events, progress=lambda value: None, liqu
         b = bars[symbol][index]
         stamp = timestamp.isoformat()
         if phase == 1:
+            if timing and not halted and index:
+                # Size the signal with the account still flat and only prior sessions visible.
+                budget = min(
+                    cash * risk["position_fraction"], (cash - risk["commission"]) / (1 + entry_cost)
+                )
+                if budget > 0:
+                    prior_close = bars[symbol][index - 1].session_end
+                    ctx = Context(
+                        History(bars[symbol], index),
+                        index - 1,
+                        [],
+                        {"_break_even": break_even(budget, entry_cost, risk["commission"])},
+                        decision_time=prior_close,
+                    )
+                    signal = evaluate(ctx)
+                    if signal:
+                        pending[symbol] = signal, prior_close
             prices[symbol] = b.open
             p = positions.get(symbol)
             if (
@@ -382,7 +408,7 @@ def backtest(spec, metadata, all_bars, events, progress=lambda value: None, liqu
                 signal = evaluate(ctx)
                 if signal and not halted:
                     enter(symbol, b, signal, b.close, stamp, ctx.decision_time)
-            elif symbol not in pending:
+            elif not timing and symbol not in pending:
                 signal = evaluate(ctx)
                 intraday_once = spec["strategy"] in (
                     "opening_ema",
@@ -431,6 +457,10 @@ def backtest(spec, metadata, all_bars, events, progress=lambda value: None, liqu
         warnings.append(
             "Daily official-close fills are idealized scheduled-auction proxies. Actual auction eligibility and costs need intraday/quote validation."
         )
+    if timing:
+        warnings.append(
+            f"SPY model fitted through {TRAIN_END} on consolidated daily bars; scores use 21 prior sessions on the selected feed. Daily open and close fills are proxies."
+        )
     if spec["params"].get("allow_short"):
         warnings.append(
             "Short availability is assumed, with fixed borrow APR; locate/recall restrictions are not simulated."
@@ -445,6 +475,10 @@ def backtest(spec, metadata, all_bars, events, progress=lambda value: None, liqu
         (Path(__file__).parent / "strategies").glob("*.py")
     )
     code_hash = digest({p.name: p.read_text(encoding="utf8") for p in strategy_files})
+    if timing:
+        import hashlib
+
+        code_hash = digest([code_hash, hashlib.sha256(MODEL_FILE.read_bytes()).hexdigest()])
     metrics = summarize(equity_points, trades, capital, benchmark, risk["risk_free"])
     metrics.update(rejected_entries=rejected, drawdown_halt=halted)
     return {

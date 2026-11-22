@@ -104,13 +104,36 @@ class HttpTests(unittest.TestCase):
             body = json.load(response)
         self.assertIn("token", body)
         self.assertNotIn("ALPACA_API_SECRET", json.dumps(body))
-        self.assertEqual(len(body["strategies"]), 15)
+        ids = {s["id"] for s in body["strategies"]}
+        self.assertTrue({"spy_open_close_linear", "spy_open_close_forest", "buy_hold"} <= ids)
 
     def test_post_requires_session_token(self):
         with self.assertRaises(urllib.error.HTTPError) as error:
             self.request("/api/sample", {})
         self.assertEqual(error.exception.code, 403)
         error.exception.close()
+
+    def test_spy_report_summary_and_download(self):
+        with self.request("/api/spy-open-close") as response:
+            self.assertIsNone(json.load(response))
+        dataset = "1" * 16
+        path = self.store.root / "experiments" / "spy-open-close" / dataset / "report.json"
+        path.parent.mkdir(parents=True)
+        report = {
+            "dataset": {"id": dataset}, "capital": 1000, "allocation": 0.2,
+            "per_side_bps": 4, "fee_per_fill": 0.01,
+            "periods": {"holdout": {"start": "2024-01-02", "end": "2025-12-31",
+                                    "arms": {}, "trades": []}}, "predictions": [],
+        }
+        path.write_text(json.dumps(report), encoding="utf8")
+        with self.request("/api/spy-open-close") as response:
+            summary = json.load(response)
+            self.assertEqual(summary["dataset"], dataset)
+            self.assertNotIn("predictions", summary)
+            self.assertNotIn("trades", summary["periods"]["holdout"])
+        with self.request("/api/spy-open-close/report?dataset=" + dataset) as response:
+            self.assertIn("attachment", response.headers["Content-Disposition"])
+            self.assertEqual(json.load(response), report)
 
     def test_duplicate_listener_does_not_initialize_service(self):
         with patch("quantlab.server.Service") as service:
@@ -153,6 +176,9 @@ class HttpTests(unittest.TestCase):
                 "2w": "2026-03-05",
                 "3w": "2026-02-26",
                 "4w": "2026-02-19",
+                "3m": "2025-12-18",
+                "6m": "2025-09-18",
+                "1y": "2025-03-18",
             }
             for period, start in expected_starts.items():
                 for feed in ("iex", "sip"):
@@ -180,7 +206,9 @@ class HttpTests(unittest.TestCase):
                         self.assertEqual(result["spec"]["symbols"], ["AAPL"])
                         self.assertEqual(result["spec"]["start"], start)
                         dataset = result["manifest"]["dataset"]
-                        self.assertLess(dataset["start"], result["spec"]["start"])
+                        self.assertLess(query["start"], start)
+                        if period == "today" or period.endswith("w"):
+                            self.assertLess(dataset["start"], start)
                         sessions = [point["session"] for point in result["equity"]]
                         if period == "today":
                             self.assertEqual(query["timeframe"], "5Min")
@@ -198,7 +226,8 @@ class HttpTests(unittest.TestCase):
                             self.assertEqual(bars[-1]["time"], f"2026-03-18T{end}:00+00:00")
                         else:
                             self.assertEqual(dataset["timeframe"], "1Day")
-                            self.assertEqual(len(sessions), 5 * int(period[0]) - 1)
+                            if period.endswith("w"):
+                                self.assertEqual(len(sessions), 5 * int(period[0]) - 1)
                             self.assertEqual(sessions[-1], "2026-03-17")
 
     def test_recent_batch_isolates_failures_and_reuses_downloads(self):

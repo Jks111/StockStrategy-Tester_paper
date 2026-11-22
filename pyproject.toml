@@ -7,7 +7,7 @@ name = "quantlab-local"
 version = "0.1.0"
 description = "Local stock strategy research and paper replay"
 requires-python = ">=3.11"
-dependencies = ["tzdata>=2025.1; platform_system == 'Windows'", "exchange-calendars>=4.13,<5"]
+dependencies = ["tzdata>=2025.1; platform_system == 'Windows'", "exchange-calendars>=4.13,<5", "numpy>=1.26", "scikit-learn>=1.6,<2"]
 
 [project.scripts]
 quantlab = "quantlab.cli:main"
@@ -16,7 +16,7 @@ quantlab = "quantlab.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-quantlab = ["ui/*.html", "ui/*.css", "ui/*.js"]
+quantlab = ["ui/*.html", "ui/*.css", "ui/*.js", "strategies/*.npz"]
 
 [tool.ruff]
 line-length = 100

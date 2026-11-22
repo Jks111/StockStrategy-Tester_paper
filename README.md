@@ -2,7 +2,7 @@
 
 A Python research application with a black chart dashboard and top tabs. It runs locally, stores datasets and experiment history, and compares strategy variants with explicit execution assumptions. It starts with labelled **synthetic data**, so it can be used without keys or money.
 
-**There are no broker order methods or live execution routes.** The Replay tab is a session-by-session local rehearsal. Optional broker connections only read Alpaca paper or Trading 212 demo accounts. This release does not execute live or broker paper orders.
+The Worker tab offers an explicit **Start automatic paper trading** control for an Alpaca paper account. The preset trades AAPL, AMZN and SPY across five long-only strategies. The default cash floor is 40% of equity, with equal strategy budgets and a 20% per-entry cap within each budget. Orders use current IEX quotes and regular-session market fills, including near-close overnight entries. The $5 exit checks unrealized P/L before execution; the fill may differ. Stop monitoring leaves positions and outstanding orders in the account. Keep one server awake while trading. After restart, start the worker again to reconcile orders and resume monitoring. Confirmed external sales are imported at the broker fill price. An unexplained position mismatch holds that ticker for reconciliation. Review paper account activity before restarting after an error. The CLI observation loop remains signals-only. No live-trading endpoint is available.
 
 ## Start on this computer
 
@@ -38,6 +38,42 @@ Only Windows IANA timezone data is an external runtime dependency. Optional deve
 6. **Data:** download Alpaca historical bars or import your own CSV. Dataset hashes include bars and provenance. Real prices are never replaced with fabricated fallbacks if a provider fails.
 7. **Replay:** start from the selected strategy. Advance one stored session at a time; open positions remain open. It recomputes the revealed prefix deterministically. Read-only account/quote connectors are available below it.
 8. **Settings:** browser-local execution defaults and connection status. The browser receives configured/not-configured flags, not secrets.
+
+## SPY open-to-close experiment
+
+In **Stock backtest → Strategies**, check **SPY open-to-close · Linear regression** or **SPY open-to-close · Random forest**, select **SPY**, and run a standard or deep test. These entries use the models frozen through 2023 on the selected feed and completed daily sessions. The **SPY open-to-close comparison** panel shows the original historical study and its daily-buy baseline.
+
+Run the paired simulation with the cached dataset on this machine. The command prints a comparison and the path to a JSON report with dated predictions, fills, model training windows and cost checks.
+
+```powershell
+.\.venv\Scripts\python.exe run.py spy-open-close --dataset 94052216058e6fce
+```
+
+On a fresh checkout, use `--download` in place of `--dataset 94052216058e6fce` to fetch split-adjusted Alpaca SIP daily bars for 2017–2025 using the configured market data credentials. The experiment checks the full exchange calendar, including early closes. Daily open and close prices approximate execution. Finalized prior-session volume is available before the next open.
+
+Ordinary least squares and a shallow random forest forecast the next session's open-to-close return from five price and volume features. The first fit uses 2017–2019. Training expands annually through the 2023 evaluation, then both models are fitted through 2023 and frozen for 2024–2025. Each arm starts with $1,000, sizes entries at 20% of equity, and exits at the same session's close. Each side pays an assumed 2 basis points of half-spread, 2 of slippage and a $0.01 fee allowance. A model trades when its forecast exceeds break-even. The primary benchmark buys every open. The report also includes flat cash, a 20% initial buy-and-hold allocation (price return), and random dates matched to each model's yearly trade count. All three cost scenarios replay the primary signals. Drawdown uses end-of-session equity.
+
+## One-shot paper signal worker
+
+The worker observes the opening EMA strategy on completed five-minute US regular-session bars. It uses the strategy registry defaults and evaluates every bar with a flat position. A signal records what the strategy returned. It carries no allocation or fill.
+
+To configure an observation, choose a symbol, feed and first session. For example:
+
+```powershell
+.\.venv\Scripts\python.exe run.py paper-worker --configure AAPL JPM XOM --feed iex --start 2026-11-19
+.\.venv\Scripts\python.exe run.py paper-worker --once
+```
+
+Configuration is local and works offline. Each manual `--once` invocation uses the latest configuration, reads Alpaca with the existing local credentials, and exits after catching up. IEX uses the invocation time as the cutoff. SIP uses a 16-minute delay. The first fetch includes 14 calendar days before the chosen start for warmup. On restart the worker revisits its latest recorded session and fetches earlier bars for the EMA. It can pick up newly returned bars in that overlap session. Previously recorded decisions stay as observed, including if the provider later revises a bar.
+
+The command prints the configuration version, number of new decisions and latest recorded bar close in UTC. The default database is `var/research.sqlite`. Pass `--state-dir PATH` to both commands for an isolated database. Changed settings create a new observation version with its own start and history. To inspect the decisions:
+
+```sql
+SELECT c.version, c.strategy, c.symbol, c.feed, c.timeframe, d.bar_end, d.outcome, d.signal
+FROM paper_signal_decisions AS d
+JOIN paper_signal_configs AS c ON c.version = d.config_version
+ORDER BY c.version DESC, d.bar_end DESC;
+```
 
 ## Strategy library
 
@@ -209,4 +245,4 @@ Preserve `var/` to retain your dataset and experiment history. Stop the server b
 
 ## Implementation boundaries
 
-This is a runnable research release. Consolidated streaming quote replay, archival SEC ingestion, formal multiple-testing statistics, historical universe/corporate-action reconciliation, broker paper order execution, live manual-approval execution and deployment are not included. They require data/account access and separate validation. The larger research plan remains a roadmap, not a claim that those later components are implemented.
+This is a runnable research release. Consolidated streaming quote replay, archival SEC ingestion, formal multiple-testing statistics, historical universe/corporate-action reconciliation, live manual-approval execution and deployment are not included. They require data/account access and separate validation. The larger research plan remains a roadmap, not a claim that those later components are implemented.

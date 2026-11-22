@@ -1,6 +1,7 @@
 """Build fresh Alpaca snapshots for exploratory stock backtests."""
 
 import re
+from calendar import monthrange
 from datetime import datetime, timedelta, timezone
 from itertools import groupby
 
@@ -10,6 +11,7 @@ from .domain import Bar, instant
 from .strategies import definition
 
 PERIOD_DAYS = {"today": 1, "1w": 7, "2w": 14, "3w": 21, "4w": 28}
+PERIOD_MONTHS = {"3m": 3, "6m": 6, "1y": 12}
 BAR_INTERVAL = timedelta(minutes=5)
 
 
@@ -46,14 +48,16 @@ def selection(raw):
         raise ValueError("Choose at least one strategy")
     strategies = {s["id"]: s for s in map(definition, strategies)}
     period, feed = raw.get("period"), raw.get("feed")
-    if not isinstance(period, str) or period not in PERIOD_DAYS:
-        raise ValueError("Choose today, 1w, 2w, 3w or 4w")
+    if not isinstance(period, str) or period not in PERIOD_DAYS.keys() | PERIOD_MONTHS.keys():
+        raise ValueError("Choose today, 1w, 2w, 3w, 4w, 3m, 6m or 1y")
     if feed not in ("iex", "sip"):
         raise ValueError("Choose the IEX or SIP feed")
     return list(dict.fromkeys(symbols)), list(strategies.values()), period, feed
 
 
 def incompatibility(symbol, strategy, period):
+    if strategy.get("family") == "spy_timing" and symbol != "SPY":
+        return "This open-to-close model was trained for SPY. Select SPY to test it."
     if strategy["timeframe"] == "1Day" and period == "today":
         return "This strategy needs completed daily bars. Choose a longer period."
     if strategy["id"] == "residual_reversion" and symbol == "SPY":
@@ -110,10 +114,16 @@ def snapshot_data(symbol, strategy, period, feed, as_of, history, *, days_ago=0)
     # Allow a margin over the 15-minute SIP restriction on basic Alpaca accounts.
     cutoff = as_of - timedelta(minutes=16) if feed == "sip" else as_of
     today = as_of.astimezone(NY).date() - timedelta(days=days_ago)
-    days = PERIOD_DAYS[period] - 1
+    if period in PERIOD_MONTHS:
+        month_index = today.year * 12 + today.month - 1 - PERIOD_MONTHS[period]
+        year, month = divmod(month_index, 12)
+        first_day = today.replace(year=year, month=month + 1, day=1)
+        start_date = first_day.replace(day=min(today.day, monthrange(year, month + 1)[1]))
+    else:
+        start_date = today - timedelta(days=PERIOD_DAYS[period] - 1)
     warmup_days = 140 if daily else 14
-    start = (today - timedelta(days=days)).isoformat()
-    warmup_start = (today - timedelta(days=days + warmup_days)).isoformat()
+    start = start_date.isoformat()
+    warmup_start = (start_date - timedelta(days=warmup_days)).isoformat()
     schedule = sessions("XNYS", warmup_start, today.isoformat())
     eligible = [
         day

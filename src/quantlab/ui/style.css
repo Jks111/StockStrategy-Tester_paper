@@ -1075,3 +1075,5 @@ dialog::backdrop {
     gap: 20px;
   }
 }
+
+#basket-events { max-height: 18rem; overflow: auto; }

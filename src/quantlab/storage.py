@@ -41,6 +41,8 @@ class Store:
                 progress REAL DEFAULT 0, message TEXT DEFAULT '', metrics TEXT, batch_id TEXT);
             CREATE TABLE IF NOT EXISTS stock_batches(
                 id TEXT PRIMARY KEY, created TEXT NOT NULL, report TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS factor_comparisons(
+                end_session TEXT PRIMARY KEY, report TEXT NOT NULL);
             """)
 
     @contextmanager
@@ -225,6 +227,16 @@ class Store:
                     }
                 )
             return history
+
+    def save_factor_comparison(self, report):
+        with self.connect() as db:
+            db.execute("INSERT OR REPLACE INTO factor_comparisons VALUES(?,?)",
+                       (report["end"], json.dumps(report, allow_nan=False)))
+
+    def latest_factor_comparison(self):
+        with self.connect() as db:
+            row = db.execute("SELECT report FROM factor_comparisons ORDER BY end_session DESC LIMIT 1").fetchone()
+            return json.loads(row[0]) if row else None
 
     def save_stock_batch(self, batch_id, report):
         with self.connect() as c:
